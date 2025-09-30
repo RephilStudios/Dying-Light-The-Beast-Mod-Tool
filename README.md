@@ -1,5 +1,5 @@
-Dying Light: The Beast - AI Assisted Modding Tool
-Welcome to the AI Assisted Modding Tool for Dying Light: The Beast! This powerful tool is designed to make modding accessible to everyone, from beginners to experienced creators. It provides an intuitive interface to help you find, edit, and manage game parameters, allowing you to tweak everything from item prices and weapon stats to player abilities.
+Dying Light: The Beast - Modding Tool
+Welcome to the Modding Tool for Dying Light: The Beast! This powerful tool is designed to make modding accessible to everyone, from beginners to experienced creators. It provides an intuitive interface to help you find, edit, and manage game parameters, allowing you to tweak everything from item prices and weapon stats to player abilities.
 
 This tool was developed with the goal of simplifying the complex process of .pak file modding. Instead of manually unpacking files and searching through thousands of lines of code, you can use our intelligent search and editing features to make precise changes quickly and easily.
 
