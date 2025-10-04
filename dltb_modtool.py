@@ -1,4 +1,4 @@
-# file: DLTB_All_in_One_v22.py
+# file: DLTB_All_in_One_v27.py
 """
 DLTB All in One — Tkinter Single-File Script Editor & Packer
 
@@ -10,8 +10,9 @@ Matches the classic 3-column UI:
 Notes
 - Treats .pak as a ZIP container.
 - No external deps; optional CLI '7z' NOT required here.
-- v22: Makes the central text preview read-only to prevent accidental edits.
-       Modifications are now exclusively handled through double-clicking and the right-side panel.
+- v27: Fixed property detection to correctly handle lines with trailing comments.
+       The Add/Edit dialog is now larger and uses a multi-line text box for values,
+       improving usability with larger text.
 """
 
 from __future__ import annotations
@@ -38,8 +39,12 @@ CONFIG_PATH = APP_DIR / "config.json"
 
 # Regexes for simple, robust matching in .scr files.
 PARAM_RE = re.compile(r'Param\("([^"]+)",\s*(".*?"|\S+)\)\s*;')
-PROP_RE  = re.compile(r'^\s*(?!Param\b)(\w+)\s*\((.*)\)\s*;')
-BLOCK_HEADER_RE = re.compile(r'^\s*(AttackPreset)\s*\(\s*"([^"]+)"\s*\)')
+# Does not match block headers and correctly ignores trailing comments.
+PROP_RE  = re.compile(r'^\s*(?!(?:Param|AttackPreset|Item|Set|PerceptionPreset)\b)(\w+)\s*\((.*?)\)\s*(?:;|\{)')
+# BLOCK_HEADER_RE is for highlighting and right-click context menu (excludes Action now)
+BLOCK_HEADER_RE = re.compile(r'^\s*(AttackPreset|Item|Set|PerceptionPreset)\s*\(\s*"([^"]+)"[^)]*\)')
+# DELETABLE_BLOCK_HEADER_RE is for default double-click deletion (excludes Action)
+DELETABLE_BLOCK_HEADER_RE = re.compile(r'^\s*(AttackPreset|Item|Set|PerceptionPreset)\s*\(\s*"([^"]+)"[^)]*\)')
 
 
 def _find_block_context_name(target_line: int, lines: List[str]) -> Optional[str]:
@@ -141,19 +146,20 @@ class EditDialog(simpledialog.Dialog):
         self.configure(bg=master.cget('bg'))
         # Description field
         ttk.Label(master, text=f"Parent/Description for '{self.param_name}':").grid(row=0, sticky="w", padx=5, pady=2)
-        self.desc_entry = ttk.Entry(master, width=50)
+        self.desc_entry = ttk.Entry(master, width=70)
         self.desc_entry.grid(row=1, padx=5, pady=(2, 8))
         self.desc_entry.insert(0, self.initial_desc)
 
         # Value field
         ttk.Label(master, text="New Value:").grid(row=2, sticky="w", padx=5, pady=2)
-        self.val_entry = ttk.Entry(master, width=50)
+        self.val_entry = tk.Text(master, width=70, height=8, font=("Consolas", 10), undo=True)
         self.val_entry.grid(row=3, padx=5, pady=2)
-        self.val_entry.insert(0, self.initial_val)
+        self.val_entry.insert('1.0', self.initial_val)
         return self.val_entry
 
     def apply(self):
-        self.result = (self.desc_entry.get(), self.val_entry.get())
+        val = self.val_entry.get('1.0', 'end-1c').strip()
+        self.result = (self.desc_entry.get(), val)
 
 
 # ------------------------------ Settings -------------------------------------- #
@@ -252,9 +258,9 @@ def scan_scr_for_hits(file_path: Path, kws: List[str]) -> List[ModEdit]:
         # 2. Check for property hits on the current line using the current context.
         current_context = context_stack[-1] if context_stack else None
         
-        if m_block := BLOCK_HEADER_RE.search(line):
+        if m_block := DELETABLE_BLOCK_HEADER_RE.search(line):
             block_type, block_name = m_block.groups()
-            search_context = f"{block_type.lower()} {block_name.lower()}"
+            search_context = f"{block_type.lower()} {block_name.lower().replace('_', ' ')}"
             if all(kw in search_context for kw in kws):
                 end_ln = find_block_bounds(lines, ln)
                 if end_ln != -1:
@@ -262,13 +268,13 @@ def scan_scr_for_hits(file_path: Path, kws: List[str]) -> List[ModEdit]:
 
         if m_param := PARAM_RE.search(line):
             pname, val = m_param.groups()
-            search_context = (current_context or "").lower() + " " + pname.lower()
+            search_context = (current_context or "").lower().replace('_', ' ') + " " + pname.lower()
             if all(kw in search_context for kw in kws):
                 hits.append(ModEdit(str(file_path), ln, val, val, current_context or pname, pname, is_param=True))
 
         if pm := PROP_RE.search(line):
             pname, oval = pm.groups()
-            search_context = (current_context or "").lower() + " " + pname.lower()
+            search_context = (current_context or "").lower().replace('_', ' ') + " " + pname.lower()
             if all(kw in search_context for kw in kws):
                 hits.append(ModEdit(str(file_path), ln, oval.strip(), oval.strip(), current_context or Path(file_path).stem, pname, is_param=False))
 
@@ -597,8 +603,10 @@ class App(tk.Tk):
         ln = int(index.split(".")[0]) - 1
         line = self.txt.get(f"{ln+1}.0", f"{ln+1}.end")
 
-        if m_block := BLOCK_HEADER_RE.search(line):
+        if m_block := DELETABLE_BLOCK_HEADER_RE.search(line):
+            self.txt.config(state=tk.NORMAL)
             lines = self.txt.get("1.0", "end-1c").splitlines()
+            self.txt.config(state=tk.DISABLED)
             if (end_ln := find_block_bounds(lines, ln)) != -1:
                 block_type, block_name = m_block.groups()
                 description = f'{block_type}: "{block_name}"'
@@ -615,7 +623,14 @@ class App(tk.Tk):
         elif m_prop := PROP_RE.search(line):
             pname, oval = m_prop.groups()
             context = self._find_context_name(ln)
-            candidate = ModEdit(str(self.current_file), ln, oval.strip(), oval.strip(), context or pname, pname, is_param=False)
+            
+            description = context or pname
+            if pname == "Action":
+                action_name_match = re.search(r'"([^"]+)"', oval)
+                if action_name_match:
+                    description = action_name_match.group(1)
+
+            candidate = ModEdit(str(self.current_file), ln, oval.strip(), oval.strip(), description, pname, is_param=False)
 
         if not candidate: return
         
@@ -646,9 +661,31 @@ class App(tk.Tk):
         self._refresh_edits_list()
 
     def _find_context_name(self, target_line: int) -> Optional[str]:
+        self.txt.config(state=tk.NORMAL)
         lines = self.txt.get("1.0","end-1c").splitlines()
+        self.txt.config(state=tk.DISABLED)
         return _find_block_context_name(target_line, lines)
     
+    def _trigger_block_deletion(self, ln: int):
+        if not self.current_file: return
+        line = self.txt.get(f"{ln+1}.0", f"{ln+1}.end")
+        
+        # This regex is broader and includes Action for the context menu
+        m_block = re.search(r'^\s*(Action|AttackPreset|Item|Set|PerceptionPreset)\s*\(\s*"([^"]+)"[^)]*\)', line)
+        if not m_block: return
+
+        self.txt.config(state=tk.NORMAL)
+        lines = self.txt.get("1.0", "end-1c").splitlines()
+        self.txt.config(state=tk.DISABLED)
+
+        if (end_ln := find_block_bounds(lines, ln)) != -1:
+            block_type, block_name = m_block.groups()
+            description = f'{block_type}: "{block_name}"'
+            if messagebox.askyesno("Confirm Block Deletion", f"Mark this block for deletion?\n\n{description}"):
+                edit = ModEdit(str(self.current_file), ln, f'Block("{block_name}")', "<DELETED>", description, block_type, edit_type='BLOCK_DELETE', end_line_number=end_ln)
+                self.active_edits[edit.key()] = edit
+                self._refresh_edits_list()
+
     def _on_preview_right_click(self, event):
         if not self.current_file: return
 
@@ -656,11 +693,20 @@ class App(tk.Tk):
         ln = int(index.split(".")[0]) - 1
         line = self.txt.get(f"{ln + 1}.0", f"{ln + 1}.end")
 
-        if not (PROP_RE.search(line) or PARAM_RE.search(line)): return
-
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="Delete Line", command=lambda: self._add_line_deletion_edit(ln))
-        menu.post(event.x_root, event.y_root)
+        
+        # Check for line deletion
+        if PROP_RE.search(line) or PARAM_RE.search(line):
+            menu.add_command(label="Delete Line", command=lambda: self._add_line_deletion_edit(ln))
+
+        # Check for block deletion (broader regex for context menu)
+        if re.search(r'^\s*(Action|AttackPreset|Item|Set|PerceptionPreset)\s*\(', line):
+            if menu.index('end') is not None:
+                menu.add_separator()
+            menu.add_command(label="Delete Block", command=lambda: self._trigger_block_deletion(ln))
+
+        if menu.index('end') is not None:
+            menu.post(event.x_root, event.y_root)
 
     def _add_line_deletion_edit(self, ln: int):
         if not self.current_file: return
@@ -686,9 +732,11 @@ class App(tk.Tk):
         if not edit: return
         file_path = Path(edit.file_path)
         def highlight():
+            self.txt.config(state=tk.NORMAL)
             self.txt.tag_remove("highlight", "1.0", tk.END)
             start, end = f"{edit.line_number + 1}.0", f"{edit.end_line_number + 1}.end"
             self.txt.see(start); self.txt.tag_add("highlight", start, end)
+            self.txt.config(state=tk.DISABLED)
 
         if self.current_file != file_path:
             item_id = self.path_to_id.get(file_path)
@@ -923,7 +971,10 @@ class App(tk.Tk):
         def save_colors():
             for key, var in color_vars.items(): self.settings.colors[mode][key] = var.get()
             self.settings.save(); self._configure_text_tags()
-            if self.current_file: self._apply_syntax_highlighting()
+            if self.current_file:
+                self.txt.config(state=tk.NORMAL)
+                self._apply_syntax_highlighting()
+                self.txt.config(state=tk.DISABLED)
             win.destroy()
         ttk.Button(frm, text="Save & Close", command=save_colors).pack(anchor="e", pady=(20,0))
 
